@@ -9,8 +9,43 @@ Shape infer_broadcast(const Shape &A, const Shape &B) {
     // TODO：对 A 和 B 进行双向广播，返回广播后的形状。
     // REF: https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
     // =================================== 作业 ===================================
-    
-    return {};
+
+    // 1. 找到两个形状中较长的长度
+    size_t maxRank = std::max(A.size(), B.size());
+
+    // 2. 补全两个形状，使得维度数量相等
+    Shape paddedA(maxRank, 1);
+    Shape paddedB(maxRank, 1);
+    for (size_t i = 0; i < A.size(); ++i)
+    {
+        paddedA[maxRank - A.size() + i] = A[i];
+    }
+    for (size_t i = 0; i < B.size(); ++i)
+    {
+        paddedB[maxRank - B.size() + i] = B[i];
+    }
+
+    // 3. 按规则从后向前逐维比较，确定结果形状
+    Shape broadcastedShape(maxRank);
+    for (size_t i = 0; i < maxRank; ++i)
+    {
+        if (paddedA[i] == 1)
+        {
+            broadcastedShape[i] = paddedB[i];
+        }
+        else if (paddedB[i] == 1)
+        {
+            broadcastedShape[i] = paddedA[i];
+        }
+        else
+        {
+            // 如果两个维度都不为 1 且不相等，则广播无效
+            IT_ASSERT(paddedA[i] == paddedB[i], "Shapes are not broadcastable");
+            broadcastedShape[i] = paddedA[i];
+        }
+    }
+
+    return broadcastedShape;
 }
 
 int get_real_axis(const int &axis, const int &rank) {
