@@ -104,7 +104,7 @@ namespace infini
     {
         auto permute_a = a.getPermute();
         auto permute_b = b.getPermute();
-        for (int i = 0; i < (int)permute_a.size(); i++)
+        for (size_t i = 0; i < permute_a.size(); i++)
             if (permute_a[permute_b[i]] != i)
                 return false;
         return true;
