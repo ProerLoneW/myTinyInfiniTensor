@@ -1,4 +1,6 @@
 #include "core/graph.h"
+#include "operators/transpose.h"
+#include "operators/matmul.h"
 #include <algorithm>
 #include <numeric>
 #include <queue>
@@ -98,6 +100,35 @@ namespace infini
         return this->sorted = true;
     }
 
+    bool InvTranspose(const TransposeObj &a, const TransposeObj &b)
+    {
+        auto permute_a = a.getPermute();
+        auto permute_b = b.getPermute();
+        for (int i = 0; i < (int)permute_a.size(); i++)
+            if (permute_a[permute_b[i]] != i)
+                return false;
+        return true;
+    }
+    bool isTransForMul(const TransposeObj &self)
+    {
+        const auto &permute = self.getPermute();
+        size_t rank = permute.size();
+
+        // 检查rank是否足够大，否则无法交换最后两维
+        if (rank < 2)
+            return false;
+
+        // 确保除了最后两维，其他维度没有变化
+        for (size_t i = 0; i < rank - 2; ++i)
+            if (permute[i] != i)
+                return false; // 如果中间维度发生了变动，就不符合条件
+
+        // 确认最后两维是互换的
+        if (permute[rank - 1] == rank - 2 && permute[rank - 2] == rank - 1)
+            return true;
+        return false;
+    }
+
     void GraphObj::optimize()
     {
         // =================================== 作业 ===================================
@@ -106,6 +137,143 @@ namespace infini
         // 1. 去除冗余的算子（例如，两个相邻的算子都是 transpose 算子，且做的是相反的操作，可以将其全部删除）
         // 2. 合并算子（例如，矩阵乘算子中含有属性transA、transB，如果其输入存在transpose，且对最后两个维度做交换，就可以将transpose融入到矩阵乘算子的属性中去）
         // =================================== 作业 ===================================
+        IT_ASSERT(topo_sort());
+
+        std::vector<Operator> remove_ops;
+        std::vector<Tensor> remove_tensors;
+        std::vector<Tensor> wait_for_cut;
+
+        // Step 1: Remove redundant Transpose operators
+        for (const auto &op : ops)
+        {
+            if (op->getOpType() == OpType::Transpose && op->getPredecessors().size() == 1)
+            {
+                auto upstream_op = op->getPredecessors()[0];
+                if (upstream_op->getOpType() == OpType::Transpose)
+                {
+                    if (InvTranspose(*(dynamic_cast<TransposeObj *>(op.get())),
+                                     *(dynamic_cast<TransposeObj *>(upstream_op.get()))))
+                    {
+                        auto upstream_tensor = upstream_op->getInputs()[0];
+                        // Remove connections from upstream_op and op
+                        removeConnections(op, upstream_op);
+                        // Reconnect downstream operators directly to upstream_op’s input tensor
+                        reconnectDownstream(op, upstream_tensor);
+                        // Mark current op and its outputs for removal
+                        markForRemoval(op, remove_ops, remove_tensors, wait_for_cut);
+                    }
+                }
+            }
+        }
+        // Step 2: Merge Transpose into Matmul
+        for (const auto &op : ops)
+        {
+            if (op->getOpType() == OpType::MatMul)
+            {
+                for (size_t i = 0; i < 2; ++i)
+                {
+                    auto input = op->getInputs()[i];
+                    if (auto upstream_op = input->getSource())
+                    {
+                        if (upstream_op->getOpType() == OpType::Transpose)
+                        {
+                            if (bool is_transpose = isTransForMul(*(dynamic_cast<TransposeObj *>(upstream_op.get()))))
+                            {
+                                // Adjust MatMul attributes based on Transpose
+                                auto matmul_op = dynamic_cast<MatmulObj *>(op.get());
+                                if (i == 0)
+                                {
+                                    matmul_op->setTransA(matmul_op->getTransA() != is_transpose);
+                                }
+                                else
+                                {
+                                    matmul_op->setTransB(matmul_op->getTransB() != is_transpose);
+                                }
+
+                                // Remove connections and replace inputs
+                                removeConnections(op, upstream_op);
+                                reconnectDownstream(op, upstream_op->getInputs()[0]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Step 3: Clean up isolated tensors
+        cleanIsolatedTensors(wait_for_cut, remove_ops, remove_tensors);
+        // Step 4: Remove marked operators and tensors from graph
+        finalizeRemoval(remove_ops, remove_tensors);
+    }
+
+    void GraphObj::removeConnections(const Operator &op, const Operator &upstream_op)
+    {
+        upstream_op->removeSuccessors(op);
+        op->removePredecessors(upstream_op);
+        if (upstream_op->getPredecessors().size() == 1)
+        {
+            auto upstream_parent_op = upstream_op->getPredecessors()[0];
+            upstream_parent_op->removeSuccessors(upstream_op);
+            upstream_op->removePredecessors(upstream_parent_op);
+            upstream_op->addSuccessors(op);
+            op->addPredecessors(upstream_op);
+        }
+    }
+
+    void GraphObj::reconnectDownstream(const Operator &op, const Tensor &upstream_tensor)
+    {
+        for (const auto &output : op->getOutputs())
+        {
+            for (const auto &target : output->getTargets())
+            {
+                upstream_tensor->addTarget(target);
+                target->replaceInput(output, upstream_tensor);
+            }
+        }
+    }
+
+    void GraphObj::markForRemoval(const Operator &op,
+                                  std::vector<Operator> &remove_ops,
+                                  std::vector<Tensor> &remove_tensors,
+                                  std::vector<Tensor> &wait_for_cut)
+    {
+        remove_ops.push_back(op);
+        for (const auto &output : op->getOutputs())
+        {
+            remove_tensors.push_back(output);
+            for (const auto &target : output->getTargets())
+            {
+                target->replaceInput(output, nullptr);
+            }
+        }
+    }
+
+    void GraphObj::cleanIsolatedTensors(std::vector<Tensor> &wait_for_cut,
+                                        std::vector<Operator> &remove_ops,
+                                        std::vector<Tensor> &remove_tensors)
+    {
+        while (!wait_for_cut.empty())
+        {
+            auto tensor = wait_for_cut.back();
+            wait_for_cut.pop_back();
+            if (auto op = tensor->getSource())
+            {
+                removeConnections(op, nullptr);
+                markForRemoval(op, remove_ops, remove_tensors, wait_for_cut);
+            }
+        }
+    }
+
+    void GraphObj::finalizeRemoval(const std::vector<Operator> &remove_ops,
+                                   const std::vector<Tensor> &remove_tensors)
+    {
+        for (const auto &op : remove_ops)
+        {
+            ops.erase(std::remove(ops.begin(), ops.end(), op), ops.end());
+        }
+        for (const auto &tensor : remove_tensors)
+        {
+            tensors.erase(std::remove(tensors.begin(), tensors.end(), tensor), tensors.end());
+        }
     }
 
     Tensor GraphObj::getTensor(int fuid) const

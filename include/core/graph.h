@@ -116,6 +116,20 @@ namespace infini
          * @brief If the nodes is sorted in topological order.
          */
         bool sorted;
+        std::vector<Operator> remove_ops;
+        std::vector<Tensor> remove_tensors;
+        std::vector<Tensor> wait_for_cut;
+        void removeConnections(const Operator &op, const Operator &upstream_op);
+        void reconnectDownstream(const Operator &op, const Tensor &upstream_tensor);
+        void markForRemoval(const Operator &op,
+                                std::vector<Operator> &remove_ops,
+                                std::vector<Tensor> &remove_tensors,
+                                std::vector<Tensor> &wait_for_cut);
+        void cleanIsolatedTensors(std::vector<Tensor> &wait_for_cut,
+                                  std::vector<Operator> &remove_ops,
+                                  std::vector<Tensor> &remove_tensors);
+        void finalizeRemoval(const std::vector<Operator> &remove_ops,
+                                   const std::vector<Tensor> &remove_tensors);
     };
 
 } // namespace infini
