@@ -124,7 +124,7 @@ namespace infini
                 return false; // 如果中间维度发生了变动，就不符合条件
 
         // 确认最后两维是互换的
-        if (permute[rank - 1] == rank - 2 && permute[rank - 2] == rank - 1)
+        if (permute[rank - 1] == (int)rank - 2 && permute[rank - 2] == (int)rank - 1)
             return true;
         return false;
     }
