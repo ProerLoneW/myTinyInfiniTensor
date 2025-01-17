@@ -119,7 +119,7 @@ namespace infini
             return false;
 
         // 确保除了最后两维，其他维度没有变化
-        for (size_t i = 0; i < rank - 2; ++i)
+        for (int i = 0; i < (int)rank - 2; ++i)
             if (permute[i] != i)
                 return false; // 如果中间维度发生了变动，就不符合条件
 
